@@ -1,0 +1,29 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: Scripts/build-dmg.sh
+        env:
+          VERSION: ${{ github.ref_name }}
+      - name: Sign the update and write the appcast
+        env:
+          SPARKLE_ED_KEY: ${{ secrets.SPARKLE_ED_KEY }}
+        run: |
+          mkdir feed
+          cp dist/Ooid.dmg feed/
+          echo "$SPARKLE_ED_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast --ed-key-file - \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+            --full-release-notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            --link "https://github.com/$GITHUB_REPOSITORY" \
+            feed
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/Ooid.dmg feed/appcast.xml --generate-notes
