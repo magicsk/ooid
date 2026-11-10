@@ -24,6 +24,6 @@ cask "ooid" do
   caveats <<~EOS
     Ooid is ad-hoc signed, not notarized, so macOS blocks its first launch.
     Try to open it, then choose Open Anyway in System Settings > Privacy & Security, or run:
-      xattr -dr com.apple.quarantine #{appdir}/Ooid.app
+      xattr -d com.apple.quarantine #{appdir}/Ooid.app
   EOS
 end

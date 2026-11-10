@@ -22,7 +22,7 @@ time. Try to open it, then choose **Open Anyway** in System Settings → Privacy
 Security, or run:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Ooid.app
+xattr -d com.apple.quarantine /Applications/Ooid.app
 ```
 
 **Updates:** Ooid updates itself using [Sparkle](https://sparkle-project.org). You can
