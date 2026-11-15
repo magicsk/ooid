@@ -49,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         static let hotCorner              = "hotCorner"
         static let maxFrameRate           = "maxFrameRate"
         static let idleThrottleEnabled    = "idleThrottleEnabled"
+        static let useSystemSaver         = "useSystemSaver"
+        static let saverSwapUntil         = "saverSwapUntil"
     }
 
     // Hot-corner enum. 0 = disabled, 1–4 = the four corners. Persisted as Int.
@@ -100,6 +102,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         set { UserDefaults.standard.set(newValue, forKey: Defaults.idleThrottleEnabled) }
     }
+    // Which screensaver the idle timer and hot corner start: Ooid's or the
+    // macOS one. `useSystemSaver` is the lasting choice; `saverSwapUntil`
+    // flips it until that date. Both persist, so a timed swap survives a
+    // restart and lapses by itself — no timer needed.
+    private var useSystemSaver: Bool {
+        get { UserDefaults.standard.bool(forKey: Defaults.useSystemSaver) }
+        set { UserDefaults.standard.set(newValue, forKey: Defaults.useSystemSaver) }
+    }
+    private var saverSwapUntil: Date? {
+        get { UserDefaults.standard.object(forKey: Defaults.saverSwapUntil) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: Defaults.saverSwapUntil) }
+    }
+    private var systemSaverActive: Bool {
+        useSystemSaver != ((saverSwapUntil ?? .distantPast) > Date())
+    }
+    private static let swapHours = [1, 2, 4, 8]
+    // The macOS screensaver doesn't change `mode`, so the idle check needs
+    // its own once-per-idle-stretch latch.
+    private var idleFired = false
     private var idleCheckTimer: Timer?
     // Hot-corner dwell tracking. `hotCornerEnteredAt` timestamps when the
     // cursor first entered the active corner; after `hotCornerDwell` seconds
@@ -422,24 +443,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         idleCheckTimer = timer
     }
     private func checkIdle() {
-        guard autoScreensaverEnabled, mode == .normal else { return }
+        guard autoScreensaverEnabled, mode != .screensaver else { return }
+        let anyEvent = CGEventType(rawValue: ~0)!
+        let idleSeconds = CGEventSource.secondsSinceLastEventType(
+            .combinedSessionState, eventType: anyEvent)
+        guard idleSeconds >= autoScreensaverMinutes * 60 else { idleFired = false; return }
+        guard !idleFired else { return }
         // Don't fire while another process is keeping the display awake
         // (video playback, presentations, screen share, etc. — the same
         // signal the macOS screensaver uses).
         if isDisplaySleepPrevented() { return }
-        let anyEvent = CGEventType(rawValue: ~0)!
-        let idleSeconds = CGEventSource.secondsSinceLastEventType(
-            .combinedSessionState, eventType: anyEvent)
-        if idleSeconds >= autoScreensaverMinutes * 60 {
-            // If we're in menu-bar mode with the window hidden, bring the
-            // window up so the screensaver has something to render on.
-            if !window.isVisible {
-                shouldRehideOnModeExit = true
-                NSApp.setActivationPolicy(.regular)
-                window.makeKeyAndOrderFront(nil)
-            }
-            enterScreensaverMode()
+        idleFired = startAutoScreensaver()
+    }
+
+    // Idle timer and hot corner start whichever screensaver is active.
+    // Returns false when nothing could start, so idle can retry later.
+    @discardableResult
+    private func startAutoScreensaver() -> Bool {
+        if systemSaverActive {
+            return NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Library/CoreServices/ScreenSaverEngine.app"))
         }
+        // Ooid's own screensaver can't run from wallpaper mode (same window).
+        guard mode == .normal else { return false }
+        // If we're in menu-bar mode with the window hidden, bring the
+        // window up so the screensaver has something to render on.
+        if !window.isVisible {
+            shouldRehideOnModeExit = true
+            NSApp.setActivationPolicy(.regular)
+            window.makeKeyAndOrderFront(nil)
+        }
+        enterScreensaverMode()
+        return true
     }
 
     // Hot-corner check. Fires screensaver when the cursor dwells in the
@@ -447,7 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // so passing-through doesn't trigger. Re-arms only after the cursor
     // leaves the corner.
     private func checkHotCorner() {
-        guard hotCorner != .none, mode == .normal else {
+        guard hotCorner != .none, mode != .screensaver else {
             hotCornerEnteredAt = nil
             hotCornerArmed = true
             return
@@ -470,15 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if CACurrentMediaTime() - hotCornerEnteredAt! >= hotCornerDwell {
             hotCornerEnteredAt = nil
             hotCornerArmed = false  // stays unarmed until cursor leaves corner
-
-            // If we're in menu-bar accessory mode with the window hidden,
-            // bring it back before the screensaver claims the display.
-            if !window.isVisible {
-                shouldRehideOnModeExit = true
-                NSApp.setActivationPolicy(.regular)
-                window.makeKeyAndOrderFront(nil)
-            }
-            enterScreensaverMode()
+            startAutoScreensaver()
         }
     }
     private func isMouse(_ p: NSPoint, inCorner corner: HotCorner, of screen: NSScreen) -> Bool {
@@ -558,6 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         menu.addItem(itemTitle: "Start Screensaver", selector: #selector(menuStartScreensaver(_:)))
         menu.addItem(itemTitle: "Toggle Wallpaper Mode", selector: #selector(menuToggleWallpaper(_:)))
+        menu.addItem(makeSaverChoiceItem())
         menu.addItem(.separator())
         menu.addItem(itemTitle: "Show Window", selector: #selector(menuShowWindow(_:)))
         menu.addItem(itemTitle: "Settings…", selector: #selector(openSettingsAction(_:)), keyEquivalent: ",")
@@ -608,6 +635,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         img.unlockFocus()
         img.isTemplate = true
         return img
+    }
+
+    // "Screensaver" submenu: pick Ooid or macOS for good, or swap to the
+    // other one for a few hours. Titles and checkmarks are filled in by
+    // validateMenuItem each time the menu opens.
+    private func makeSaverChoiceItem() -> NSMenuItem {
+        let menu = NSMenu()
+        menu.addItem(itemTitle: "Ooid", selector: #selector(useOoidSaverAction(_:)))
+        menu.addItem(itemTitle: "macOS", selector: #selector(useSystemSaverAction(_:)))
+        menu.addItem(.separator())
+        for h in Self.swapHours {
+            menu.addItem(itemTitle: "", selector: #selector(swapSaverAction(_:))).tag = h
+        }
+        for i in menu.items { i.target = self }
+        let item = NSMenuItem(title: "Screensaver", action: nil, keyEquivalent: "")
+        item.submenu = menu
+        return item
+    }
+    @objc private func useOoidSaverAction(_ sender: Any?) {
+        useSystemSaver = false
+        saverSwapUntil = nil
+    }
+    @objc private func useSystemSaverAction(_ sender: Any?) {
+        useSystemSaver = true
+        saverSwapUntil = nil
+    }
+    @objc private func swapSaverAction(_ sender: NSMenuItem) {
+        saverSwapUntil = Date().addingTimeInterval(Double(sender.tag) * 3600)
     }
 
     @objc private func menuStartScreensaver(_ sender: Any?) {
@@ -666,6 +721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                       keyEquivalent: ",")
         settingsItem.target = self
         appMenu.addItem(settingsItem)
+        appMenu.addItem(makeSaverChoiceItem())
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(title: "Toggle Full Screen",
                                    action: #selector(NSWindow.toggleFullScreen(_:)),
@@ -676,6 +732,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                    keyEquivalent: "q"))
         appMenuItem.submenu = appMenu
         NSApp.mainMenu = main
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let system = systemSaverActive
+        let swapEnd = saverSwapUntil.flatMap { $0 > Date() ? $0 : nil }
+        let until = swapEnd.map { " until " + $0.formatted(date: .omitted, time: .shortened) } ?? ""
+        switch item.action {
+        case #selector(useOoidSaverAction(_:)):
+            item.state = system ? .off : .on
+            item.title = "Ooid" + (system ? "" : until)
+        case #selector(useSystemSaverAction(_:)):
+            item.state = system ? .on : .off
+            item.title = "macOS" + (system ? until : "")
+        case #selector(swapSaverAction(_:)):
+            item.title = "\(useSystemSaver ? "Ooid" : "macOS") for \(item.tag) Hour\(item.tag == 1 ? "" : "s")"
+        default: break
+        }
+        return true
     }
 }
 
