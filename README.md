@@ -60,6 +60,7 @@ through a browser-level abstraction. On the same pixels, a direct Metal path giv
 - **Click** — emits a shockwave in whatever medium the current shader models
 - **1…9, 0** — jump directly to shader 1…9 / 10 (11–27: arrows or the nav)
 - **Left / Right arrow, Space** — cycle
+- **- / =** — lower / raise the render resolution (also in Settings)
 - **F / Escape** — toggle fullscreen
 - **Q** — quit
 
@@ -71,6 +72,8 @@ swift run -c release
 
 `swift run -c release Ooid --bench [--png DIR]` renders every shader offscreen and
 prints its GPU ms/frame against the 120 fps budget (and optionally a snapshot).
+`--quality Q` mirrors the Resolution setting (1 = Battery saver, 4 = High, 10 = Display),
+`--paced FPS` measures real-time GPU busy % and CPU % instead, and `--only NAME` filters.
 
 The first launch compiles the shaders (~100 ms); subsequent launches hit the
 Metal shader cache and start instantly.

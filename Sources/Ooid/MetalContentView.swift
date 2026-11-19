@@ -10,13 +10,10 @@ final class MetalContentView: MTKView {
     let renderer: Renderer
     private var trackingArea: NSTrackingArea?
 
-    // Effective pixels per point, before the shader's own renderScale. Default
-    // 1.0 — a quarter of a retina display's fragments; the fields are smooth
-    // enough that the layer's bilinear upscale is hard to tell from native.
-    // The '-' key drops quality (fewer fragments, cheaper) and '=' / '+'
-    // raises it up to native.
-    private let qualityLevels: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-    private var qualityIndex = 2    // default = 1.0
+    // Index into SettingsController.resolutionOptions (persisted by the
+    // AppDelegate). '-' steps down, '=' / '+' up; onResolutionStepped saves it.
+    private var resolutionIndex = SettingsController.defaultResolution
+    var onResolutionStepped: ((Int) -> Void)?
 
     // Adaptive FPS tuned for wallpaper use: shaders are smooth analogue
     // animations that read fine at 30fps, and on ProMotion displays the
@@ -145,7 +142,7 @@ final class MetalContentView: MTKView {
         // get proportionally fewer px/pt so the GPU cost per frame stays the same.
         // Never render above backing — more fragments than pixels is pure waste.
         let fit = min(1, (1728 * 1117 / max(1, bounds.width * bounds.height)).squareRoot())
-        let effective = min(backing, qualityLevels[qualityIndex] * fit
+        let effective = min(backing, SettingsController.resolutionOptions[resolutionIndex].scale * fit
             * ShaderCatalog.entries[renderer.currentShaderIndex].renderScale)
         let w = max(1, Int(bounds.width  * effective))
         let h = max(1, Int(bounds.height * effective))
@@ -272,9 +269,9 @@ final class MetalContentView: MTKView {
             case "0":
                 renderer.selectShader(9); noteInteraction(); return
             case "-", "_":
-                qualityIndex = max(0, qualityIndex - 1); updateDrawableSize(); return
+                setResolution(resolutionIndex - 1); onResolutionStepped?(resolutionIndex); return
             case "=", "+":
-                qualityIndex = min(qualityLevels.count - 1, qualityIndex + 1); updateDrawableSize(); return
+                setResolution(resolutionIndex + 1); onResolutionStepped?(resolutionIndex); return
             case "f", "F":
                 window?.toggleFullScreen(nil); return
             case "w", "W":
@@ -292,6 +289,10 @@ final class MetalContentView: MTKView {
     // Called by the renderer when the shader changes (since heavy shaders use
     // a different drawable scale).
     func onShaderChanged() { updateDrawableSize() }
+    func setResolution(_ i: Int) {
+        resolutionIndex = max(0, min(SettingsController.resolutionOptions.count - 1, i))
+        updateDrawableSize()
+    }
 
     // MARK: - Wallpaper-mode input
     func setWallpaperMode(_ on: Bool) {

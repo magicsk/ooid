@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 // on screen, and prints GPU busy % and this process's CPU %.
 // --only SUBSTR limits either mode to shaders whose fragment function matches.
 enum Bench {
-    static func run(pngDir: String?, pacedFps: Double? = nil, only: String? = nil) throws {
+    static func run(pngDir: String?, pacedFps: Double? = nil, only: String? = nil, quality: Double = 1) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw Renderer.RendererError.setupFailed("no Metal") }
         let r = try Renderer(device: device)
         r.updateMouseNormalized(SIMD2<Float>(0.62, 0.55))
@@ -22,7 +22,7 @@ enum Bench {
                               : "shader            render       GPU busy   CPU     @ \(Int(pacedFps!)) fps")
         for (i, e) in ShaderCatalog.entries.enumerated() where only.map(e.fragmentFunction.contains) ?? true {
             r.selectShader(i)
-            let scale = min(2, e.renderScale)
+            let scale = min(2, quality * e.renderScale)   // as MetalContentView.updateDrawableSize
             let size = CGSize(width: (1728 * scale).rounded(), height: (1117 * scale).rounded())
             let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: Int(size.width),
                                                               height: Int(size.height), mipmapped: false)

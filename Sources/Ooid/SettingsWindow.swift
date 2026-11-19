@@ -12,10 +12,21 @@ final class SettingsController: NSObject, NSWindowDelegate {
     var onHotCornerChanged: ((Int) -> Void)?
     var onFrameRateChanged: ((Int) -> Void)?
     var onIdleThrottleToggled: ((Bool) -> Void)?
+    var onResolutionChanged: ((Int) -> Void)?
 
     // Frame-rate options. 30 is the GPU-friendly default; 60 is standard
     // smooth; 120 unlocks ProMotion for users who want maximum fluidity.
     static let frameRateOptions: [Int] = [30, 60, 120]
+
+    // Render resolution: a multiplier on each shader's renderScale, which is
+    // tuned to ~0.24 ms/frame on a 16" MBP. The view caps the result at the
+    // display's own pixels, so High already reaches native for most shaders
+    // and costs at most 16× the Battery saver budget for the heaviest ones;
+    // Display renders every shader at native whatever it costs.
+    static let resolutionOptions: [(name: String, scale: CGFloat)] = [
+        ("Battery saver", 1), ("Balanced", 2), ("High", 4), ("Display (native)", .infinity),
+    ]
+    static let defaultResolution = 2
 
     private var window: NSWindow?
 
@@ -27,9 +38,10 @@ final class SettingsController: NSObject, NSWindowDelegate {
     private let hotCornerPopup = NSPopUpButton(title: "", target: nil, action: nil)
     private let frameRatePopup = NSPopUpButton(title: "", target: nil, action: nil)
     private let idleThrottleCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let resolutionPopup = NSPopUpButton(title: "", target: nil, action: nil)
 
     func show(autoEnabled: Bool, minutes: Double, showInMenuBar: Bool, hotCorner: Int,
-              frameRate: Int, idleThrottle: Bool) {
+              frameRate: Int, idleThrottle: Bool, resolution: Int) {
         buildWindowIfNeeded()
         autoEnableCheckbox.state = autoEnabled ? .on : .off
         timeoutSlider.doubleValue = minutes
@@ -38,6 +50,7 @@ final class SettingsController: NSObject, NSWindowDelegate {
         hotCornerPopup.selectItem(at: hotCorner)
         selectFrameRate(frameRate)
         idleThrottleCheckbox.state = idleThrottle ? .on : .off
+        resolutionPopup.selectItem(at: resolution)
         refreshEnabledStates()
 
         guard let window = window else { return }
@@ -161,6 +174,27 @@ final class SettingsController: NSObject, NSWindowDelegate {
         frameRateNote.maximumNumberOfLines = 2
         frameRateNote.preferredMaxLayoutWidth = 380
 
+        let resolutionLabel = NSTextField(labelWithString: "Resolution")
+        resolutionLabel.font = NSFont.systemFont(ofSize: 12)
+        resolutionLabel.textColor = .secondaryLabelColor
+        resolutionPopup.removeAllItems()
+        resolutionPopup.addItems(withTitles: Self.resolutionOptions.map(\.name))
+        resolutionPopup.target = self
+        resolutionPopup.action = #selector(resolutionChanged(_:))
+        resolutionPopup.translatesAutoresizingMaskIntoConstraints = false
+        resolutionPopup.widthAnchor.constraint(equalToConstant: 170).isActive = true
+
+        let resolutionRow = NSStackView(views: [resolutionLabel, resolutionPopup])
+        resolutionRow.orientation = .horizontal
+        resolutionRow.spacing = 10
+        resolutionRow.alignment = .firstBaseline
+
+        let resolutionNote = NSTextField(labelWithString: "Sharper looks better but uses more GPU. High draws most shaders at your display's resolution; Display draws every one at it, including the heaviest. - and = step through these while Ooid is in front.")
+        resolutionNote.font = NSFont.systemFont(ofSize: 11)
+        resolutionNote.textColor = .tertiaryLabelColor
+        resolutionNote.maximumNumberOfLines = 3
+        resolutionNote.preferredMaxLayoutWidth = 380
+
         idleThrottleCheckbox.title = "Reduce to 15 fps when idle"
         idleThrottleCheckbox.target = self
         idleThrottleCheckbox.action = #selector(idleThrottleChanged(_:))
@@ -173,6 +207,7 @@ final class SettingsController: NSObject, NSWindowDelegate {
 
         let general = NSStackView(views: [generalHeader, showInMenuBarCheckbox, menuBarNote,
                                           frameRateRow, frameRateNote,
+                                          resolutionRow, resolutionNote,
                                           idleThrottleCheckbox, idleThrottleNote])
         general.orientation = .vertical
         general.alignment = .leading
@@ -237,6 +272,9 @@ final class SettingsController: NSObject, NSWindowDelegate {
         let idx = sender.indexOfSelectedItem
         guard idx >= 0 && idx < Self.frameRateOptions.count else { return }
         onFrameRateChanged?(Self.frameRateOptions[idx])
+    }
+    @objc private func resolutionChanged(_ sender: NSPopUpButton) {
+        onResolutionChanged?(sender.indexOfSelectedItem)
     }
     @objc private func idleThrottleChanged(_ sender: NSButton) {
         onIdleThrottleToggled?(sender.state == .on)

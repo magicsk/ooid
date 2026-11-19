@@ -26,11 +26,13 @@ struct ShaderEntry {
     let desc: String
     let params: [(String, String)]
     let options: [ShaderOption]   // 0..4 options; maps to uniform opt.xyzw
-    // Multiplier on the view's quality level (px/pt, capped at native; the layer
-    // bilinear-upscales the rest). Tuned so each shader stays under ~0.24 ms of
-    // M1 Max GPU per frame on a 16" MBP at 120 fps — below that the GPU idles
-    // between frames and reads ~0% busy, just above it jumps to 11–15%.
-    // Re-tune with `swift run -c release Ooid --bench`.
+    // Pixels per point at the Battery saver resolution (capped at native; the
+    // layer bilinear-upscales the rest). Tuned so each shader stays under
+    // ~0.24 ms of M1 Max GPU per frame on a 16" MBP there — below that the GPU
+    // idles between frames and reads ~0% busy, just above it jumps to 11–15%.
+    // The Resolution setting multiplies it (SettingsController.resolutionOptions),
+    // so shaders must size features in screen units, never in pixels.
+    // Re-tune with `swift run -c release Ooid --bench [--quality Q]`.
     let renderScale: CGFloat
     // Non-empty = the options panel shows a colour section; the first preset is
     // the default palette. `colorLabels` names the three wells.
@@ -324,7 +326,7 @@ enum ShaderCatalog {
                 ShaderOption(name: "Mist",      defaultValue: 0.50, units: nil),
                 ShaderOption(name: "Lights",    defaultValue: 0.50, units: nil),
             ],
-            renderScale: 0.5,   // defocused lights and pixel-relative drop edges: upscales cleanly
+            renderScale: 0.5,   // defocused lights; drops are sized on screen, only their edges in pixels
             colorPresets: [
                 ColorPreset(name: "Sodium",
                             shadow: SIMD4<Float>(0.24, 0.46, 1.00, 1),
@@ -368,7 +370,7 @@ enum ShaderCatalog {
                 ShaderOption(name: "Glow",  defaultValue: 0.50, units: nil),
                 ShaderOption(name: "Snow",  defaultValue: 0.50, units: nil),
             ],
-            renderScale: 0.6,   // additive glows on dark water; tentacles keep a pixel-relative width
+            renderScale: 0.6,   // additive glows on dark water; tentacles and snow keep their size on screen
             colorPresets: [
                 ColorPreset(name: "Abyss",
                             shadow: SIMD4<Float>(0.12, 0.52, 1.00, 1),
@@ -412,7 +414,7 @@ enum ShaderCatalog {
                 ShaderOption(name: "Ripple",   defaultValue: 0.50, units: nil),
                 ShaderOption(name: "Glow",     defaultValue: 0.50, units: nil),
             ],
-            renderScale: 0.55,   // soft glows; lantern edges and stars are pixel-relative
+            renderScale: 0.55,   // soft glows; stars and shore lamps keep their size on screen
             colorPresets: [
                 ColorPreset(name: "Dusk",
                             shadow: SIMD4<Float>(0.32, 0.34, 1.00, 1),

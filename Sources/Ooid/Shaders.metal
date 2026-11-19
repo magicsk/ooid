@@ -1172,14 +1172,16 @@ fragment float4 fs13_ripple(VSOut in [[stage_in]], constant Uniforms& u [[buffer
 // ======================================================================
 // SHADER 14 — Topographic contours
 // ======================================================================
-// Four fast noise octaves of terrain, surveyed as isolines whose width is
-// held at ~1 px with fwidth(). Below sea level the lines turn to soundings.
+// Four noise octaves of terrain, surveyed as isolines held at a fixed share of
+// the screen height with fwidth(). Below sea level the lines turn to soundings.
+// Exact noise: the fast path's 8-bit filter weights step the height every few
+// pixels at native resolution, and fwidth() turns those steps into ragged lines.
 static float s14_height(float2 p, constant Uniforms& u, texture2d<float> nt) {
     float t = u.time * 0.012;
-    float h = 0.52 * vnoise(p * 0.85 + float2(t, -0.6 * t), nt)
-            + 0.26 * vnoise(p * 1.9 + float2(-0.8 * t, 0.5 * t) + 7.3, nt)
-            + 0.13 * vnoise(p * 4.1 + float2(1.3 * t, t) + 3.1, nt)
-            + 0.07 * vnoise(p * 8.7 + 11.9, nt);
+    float h = 0.52 * vnoiseExact(p * 0.85 + float2(t, -0.6 * t), nt)
+            + 0.26 * vnoiseExact(p * 1.9 + float2(-0.8 * t, 0.5 * t) + 7.3, nt)
+            + 0.13 * vnoiseExact(p * 4.1 + float2(1.3 * t, t) + 3.1, nt)
+            + 0.07 * vnoiseExact(p * 8.7 + 11.9, nt);
     h += 0.42 * u.mouseEffects * exp(-length_squared(p - aspectCorrectedMouse(u.mouse, u.res)) * 5.0);
     // Meteor: a crater that opens and heals as the click decays.
     float cd = length(p - aspectCorrectedMouse(u.clickPos, u.res));
@@ -1193,15 +1195,18 @@ fragment float4 fs14_contour(VSOut in [[stage_in]], constant Uniforms& u [[buffe
     float2 p  = (fc * 2.0 - u.res) / u.res.y;
     float h = s14_height(p, u, nt);
 
+    // Line widths were tuned in pixels at 1340 px of screen height; scale them
+    // with the height so the ink weight is the same at every resolution.
+    float wpx = max(1.0, u.res.y / 1340.0);
     float L  = h * 22.0;                                     // 22 isolines per unit
-    float aa = max(fwidth(L), 1e-4);
+    float aa = max(fwidth(L), 1e-4) * wpx;
     float line  = saturate(1.0 - (0.5 - abs(fract(L) - 0.5)) / (aa * 1.1));
     float index = saturate(1.0 - (0.5 - abs(fract(L / 5.0) - 0.5)) * 5.0 / (aa * 1.9));
 
     const float sea = 0.36;
     float hAA  = max(fwidth(h), 1e-4);
     float land = smoothstep(sea - hAA, sea + hAA, h);
-    float coast = saturate(1.0 - abs(h - sea) / (hAA * 1.4));
+    float coast = saturate(1.0 - abs(h - sea) / (hAA * wpx * 1.4));
 
     // Hillshade from the screen-space slope (2×2-quad granularity is fine for
     // a shade this soft).
@@ -1746,7 +1751,8 @@ fragment float4 fs21_phosphor(VSOut in [[stage_in]], constant Uniforms& u [[buff
 // ======================================================================
 // SHADER 22 — Turing coral (Gray–Scott)
 // ======================================================================
-// State lives in an rg16Float texture at 1/3 of the drawable: R = U (feed),
+// State lives in an rg16Float texture 372 cells tall, whatever the drawable
+// (the pattern's scale is set in cells, so a fixed grid keeps it): R = U (feed),
 // G = V (catalyst). The renderer runs ks22_step ~480×/s, ping-ponging two
 // textures; fs22_turing only shades the latest one. Feed and kill rates drift
 // across the screen and through time, so spots, worms and coral keep trading
@@ -1846,15 +1852,19 @@ struct S23Glass { float2 off; float mask; float trail; float dark; float spec; }
 static inline float s23_saw(float b, float t) { return smoothstep(0.0, b, t) * smoothstep(1.0, b, t); }
 
 // One drop of radius R seen from offset d: lens offset, mask, rim shade and glint.
+// Sizes are in screen units; only the edge's width is in pixels. A drop finer
+// than the pixel grid is drawn pixel-sized and fainter, so it fades out
+// instead of flickering or vanishing at a size that depends on resolution.
 static inline void s23_drop(float2 d, float R, float px, thread S23Glass& g) {
-    if (R < 0.6 * px) return;
-    float r2 = dot(d, d) / (R * R);
+    if (R < 1e-4) return;
+    float Rc = max(R, 0.75 * px);
+    float r2 = dot(d, d) / (Rc * Rc);
     if (r2 >= 1.0) return;
-    float m = smoothstep(1.0, max(1.0 - 2.5 * px / R, 0.0), sqrt(r2));
-    g.off  += d / R * (0.18 + 0.60 * r2) * m;                // a fisheye: the whole street, upside down
+    float m = smoothstep(1.0, max(1.0 - 2.5 * px / Rc, 0.0), sqrt(r2)) * (R * R) / (Rc * Rc);
+    g.off  += d / Rc * (0.18 + 0.60 * r2) * m;               // a fisheye: the whole street, upside down
     g.mask  = max(g.mask, m);
     g.dark  = max(g.dark, m * r2 * r2 * r2 * r2);
-    float2 hl = d / R - float2(-0.32, 0.40);
+    float2 hl = d / Rc - float2(-0.32, 0.40);
     g.spec += m * exp(-dot(hl, hl) * 18.0);
 }
 // The wavering line a clicked drop runs down from c, as x at height y.
@@ -1894,7 +1904,7 @@ static void s23_slide(float2 p, float t, float colW, float cellH, float seed, fl
     float w = R * 0.72 * len;
     float tr = saturate((w - abs(d.x)) / (0.45 * w + px)) * above * len;
     g.trail = max(g.trail, tr);
-    g.off.x += d.x * tr * 1.2;                              // a film of water still bends the light
+    g.off.x += d.x * tr * 0.5;                              // a film of water bends the light a little (1 or more would fold it over)
     // ...and keeps a string of beads, fixed on the glass.
     float sp = 2.7 * R;
     float by = p.y / sp + n.x * 5.0;
@@ -1957,7 +1967,7 @@ fragment float4 fs23_rain(VSOut in [[stage_in]], constant Uniforms& u [[buffer(0
     // A click lands one more drop: it clings a moment, then runs and thins away with
     // the click. click decays as 0.94^(60 t), so its value is the drop's age.
     float2 c0 = aspectCorrectedMouse(u.clickPos, u.res);
-    if (u.click > 0.0 && abs(p.x - c0.x) < 0.12) {
+    if (u.click > 0.0 && abs(p.x - c0.x) < 0.06 + 0.1 * rain.y) {      // as far as its wandering path plus its radius reach
         float age = -log(u.click) / 3.712;
         float run = max(age - 0.4, 0.0);
         float live = u.mouseEffects * smoothstep(0.002, 0.035, u.click);
@@ -2147,7 +2157,8 @@ static float3 s24_jelly(float2 p, float4 A, float4 B, float4 C, float3 heart, fl
     if (s > 0.0) {
         float sn = s / L;
         float sway = R * (0.03 + 0.32 * sn);
-        float tw = max(px * 0.8, R * 0.013);
+        float thread0 = max(0.0024, R * 0.013);                // a tentacle's width on screen
+        float tw = max(thread0, 0.8 * px);                      // never finer than the pixel grid; dimmer to match
         float tx = lx - 0.5 * sway * sin(s * k * 0.45 - B.z * 0.5);     // one slow swing shared by all seven
         float tent = 0.0;
         for (int j = 0; j < 7; j++) {
@@ -2157,7 +2168,7 @@ static float3 s24_jelly(float2 p, float4 A, float4 B, float4 C, float3 heart, fl
             float dx = (tx - x0 - sway * sin(s * k * (0.78 + 0.07 * fj) - B.z + fj * 2.1)) / tw;
             tent += exp(-dx * dx) * (0.55 + 0.45 * fract(fj * 0.618));
         }
-        light += tent * (1.0 - sn) * (1.0 - sn) * 0.5;
+        light += tent * (1.0 - sn) * (1.0 - sn) * 0.5 * thread0 / tw;
     }
     // Frilled oral arms, hanging from the heart of the bell.
     float sa = (0.3 * Hh - l.y) / (R * 2.1);
@@ -2198,13 +2209,18 @@ fragment float4 fs24_jelly(VSOut in [[stage_in]], constant Uniforms& u [[buffer(
         float2 part = dm * 0.35 * u.mouseEffects * exp(-dot(dm, dm) * 5.0);
         for (int l = 0; l < 3; l++) {
             float fl = float(l);
-            float2 q = (p - part) * (6.0 + 7.0 * fl) + float2(sway[l] + fl * 7.3, fall[l]);
+            float sc = 6.0 + 7.0 * fl;
+            float2 q = (p - part) * sc + float2(sway[l] + fl * 7.3, fall[l]);
             float2 id = floor(q);
             float4 n = nt.gather(noiseSampler, (id * 2.0 + float2(fl * 38.0 + 1.0, 1.0)) / 256.0);
             if (n.w > 0.5) {
+                // A mote is never smaller on screen than 0.0021, nor finer than the
+                // pixel grid; one drawn larger than it is glows fainter, same light.
                 float r = mix(0.11, 0.035, fl * 0.5) * (0.6 + 0.8 * n.z);
-                float d2 = length_squared(fract(q) - 0.2 - 0.6 * n.xy) / (r * r);
-                if (d2 < 7.0) col += flake * exp(-d2) * (0.055 + 0.075 * fl);
+                float rc = max(r, sc * max(0.0021, 0.7 * px));
+                float edge = max(0.2, 1.7 * rc);                // keeps the whole mote inside its cell
+                float d2 = length_squared(fract(q) - edge - (1.0 - 2.0 * edge) * n.xy) / (rc * rc);
+                if (d2 < 7.0) col += flake * exp(-d2) * (0.055 + 0.075 * fl) * (r * r) / (rc * rc);
             }
         }
     }
@@ -2246,11 +2262,12 @@ fragment float4 fs24_jelly(VSOut in [[stage_in]], constant Uniforms& u [[buffer(
 constant float S25_HORIZON = -0.30;         // p.y of the waterline
 constant float S25_MAGIC   = 2525.0;
 constant float S25_TAG     = 25.0625;
-constant float S25_REACH   = 8.0;           // a lantern's glow ends this many half-widths out
+constant float S25_REACH   = 6.5;           // a lantern's glow ends this many half-widths out
 constant int   S25_N       = 18;
 constant int   S25_CLICKS  = 4;
-constant int   S25_ALL     = 22;            // scene[i] = (centre, half-width, glow × lit), scene[22 + i] = (sin lean, cos lean, glow, lit)
+constant int   S25_ALL     = 22;            // scene[i] = (centre, 1 / half-width, glow × lit), scene[22 + i] = (sin lean, cos lean, glow, lit)
 constant int   S25_CLOCK   = 44;            // the clock, as s_tick keeps it
+constant int   S25_PAPER   = 45;            // scene[45..47].rgb = the paper's glow, its unlit depth, the flame through it
 constant int   S25_STATE   = 48;            // scene[48 + k] = (release x, height now, release time, seed), scene[52] = ring header
 constant int   S25_TILES   = 53;            // scene[53 + k][j] = bitmask of lanterns whose glow reaches tile 4k + j
 
@@ -2264,7 +2281,7 @@ static inline void s25_place(device float4* scene, int slot, float2 c, float siz
     lean -= dm.x * push * 0.9;
     glow *= mix(0.4, 1.6, u.opt.w)
           * (0.93 + 0.07 * sin(u.time * 2.3 + seed * 50.0) * sin(u.time * 1.1 + seed * 20.0));  // the flame breathes
-    scene[slot] = float4(c, lit > 0.0 ? size : 0.0, glow * lit);    // no size, no pixels
+    scene[slot] = float4(c, lit > 0.0 ? 1.0 / size : 0.0, glow * lit);     // 0 = out, and left out of every tile
     scene[S25_ALL + slot] = float4(sin(lean), cos(lean), glow, lit);
 }
 kernel void setup_fs25_lanterns(constant Uniforms& u [[buffer(0)]], device float4* scene [[buffer(1)]],
@@ -2273,7 +2290,15 @@ kernel void setup_fs25_lanterns(constant Uniforms& u [[buffer(0)]], device float
     float2 ck = s_tick(scene[S25_CLOCK], S25_TAG, u.dt * rise);
     threadgroup_barrier(mem_flags::mem_device);         // everyone has read the clock
     float c = ck.x + ck.y, t = u.time, aspect = u.res.x / u.res.y;
-    if (i == 0) scene[S25_CLOCK] = float4(ck.x, S25_TAG, ck.y, 0.0);
+    if (i == 0) {
+        scene[S25_CLOCK] = float4(ck.x, S25_TAG, ck.y, 0.0);
+        // The paper's colours, worked out once here: in the fragment they would be hoisted
+        // out of the lantern loop and paid for by every pixel, lantern or not.
+        float3 paper = u.col2.rgb;
+        scene[S25_PAPER]     = float4(mix(paper, paper * paper, 0.5), 0.0);
+        scene[S25_PAPER + 1] = float4(0.8 * paper * paper * paper + float3(0.0, 0.0, 0.02), 0.0);
+        scene[S25_PAPER + 2] = float4(max(sqrt(paper), 0.25) * 1.3, 0.0);     // the flame shows even through black paper
+    }
     if (i < uint(S25_N)) {
         float fi = float(i);
         float near = (fi + 0.5) / float(S25_N);             // 1 = nearest, drawn last
@@ -2330,8 +2355,7 @@ kernel void setup_fs25_lanterns(constant Uniforms& u [[buffer(0)]], device float
             uint mask = 0;
             for (int k = 0; k < S25_ALL; k++) {
                 float4 A = scene[k];
-                float r = S25_REACH * A.z;
-                if (A.z > 0.0 && all(A.xy + r > lo) && all(A.xy - r < hi)) mask |= 1u << k;
+                if (A.z > 0.0 && length_squared(A.xy - clamp(A.xy, lo, hi)) * A.z * A.z < S25_REACH * S25_REACH) mask |= 1u << k;
             }
             masks[j] = float(mask);
         }
@@ -2348,14 +2372,16 @@ static float3 s25_sky(float2 p, float t, float px, constant Uniforms& u, texture
     float cl = vnoise(float2(p.x * 0.9 + t * 0.004, h * 7.0), nt)
              * vnoise(float2(p.x * 2.3 - t * 0.003, h * 16.0 + 3.0), nt);
     col += band * 0.75 * smoothstep(0.22, 0.6, cl) * exp(-h * 2.2);         // thin cloud bars
-    // A few early stars, never finer than the pixel grid can hold steady.
+    // A few early stars, a fixed size on screen; where even that is finer than
+    // the pixel grid they are drawn wider and fainter, the same light.
     if (h > 0.35) {
         float2 q = p * 21.0;
         float2 id = floor(q);
         float sh = hash12(id);
         if (sh > 0.9) {
             float2 o = float2(hash12(id + 7.1), hash12(id + 3.3)) * 0.6 + 0.2;
-            col += float3(0.8, 0.85, 1.0) * exp(-length_squared(fract(q) - o) * min(700.0, 0.0035 / (px * px)))
+            float tightness = min(330.0, 0.0035 / (px * px));
+            col += float3(0.8, 0.85, 1.0) * exp(-length_squared(fract(q) - o) * tightness) * (tightness / 330.0)
                  * smoothstep(0.35, 1.1, h) * (0.45 + 0.25 * sin(t * 1.3 + sh * 60.0));
         }
     }
@@ -2368,7 +2394,9 @@ static float3 s25_sky(float2 p, float t, float px, constant Uniforms& u, texture
         float lh = hash12(float2(floor(lx), 8.3));
         if (lh > 0.62) {
             float2 ld = float2((fract(lx) - 0.2 - 0.6 * fract(lh * 57.0)) / 16.0, h - 0.006 - 0.012 * fract(lh * 131.0));
-            col += mix(u.col2.rgb, sqrt(u.col2.rgb), 0.4) * exp(-dot(ld, ld) / (px * px * 2.5)) * (0.3 + 0.5 * fract(lh * 239.0));
+            float spread = max(2.66e-5, 2.5 * px * px);        // a lamp's size on screen, or the pixel grid's if coarser
+            col += mix(u.col2.rgb, sqrt(u.col2.rgb), 0.4) * exp(-dot(ld, ld) / spread) * (2.66e-5 / spread)
+                 * (0.3 + 0.5 * fract(lh * 239.0));
         }
     }
     return col;
@@ -2395,8 +2423,6 @@ fragment float4 fs25_lanterns(VSOut in [[stage_in]], constant Uniforms& u [[buff
     }
 
     float3 col = s25_sky(sp, t, px, u, nt);
-    float3 paper = u.col2.rgb;
-    float3 halo = mix(paper, paper * paper, 0.5);
     // Only the lanterns whose glow reaches this point's tile of sky, far to near.
     int2 tile = clamp(int2(floor(float2(sp.x / (2.0 * aspect) + 0.5, (sp.y - S25_HORIZON) / 1.3) * float2(8.0, 5.0))),
                       int2(0), int2(7, 4));
@@ -2406,21 +2432,20 @@ fragment float4 fs25_lanterns(VSOut in [[stage_in]], constant Uniforms& u [[buff
         int i = int(ctz(reach));
         reach &= reach - 1;
         float4 A = scene[i];
-        float2 d = (sp - A.xy) / A.z;
+        float2 d = (sp - A.xy) * A.z;
         float r2 = dot(d, d);
         if (r2 >= S25_REACH * S25_REACH) continue;
-        col += halo * A.w * (0.30 * exp(-r2 * 0.32) + 0.07 * (exp(-r2 * 0.07) - 0.0113));   // glow in the haze, zero at its reach
+        col += scene[S25_PAPER].rgb * A.w * (0.30 * exp(-r2 * 0.32) + 0.07 * (exp(-r2 * 0.07) - 0.0520));   // glow in the haze, zero at its reach
         if (r2 < 4.0) {
             float4 B = scene[S25_ALL + i];
             float2 l = float2(d.x * B.y - d.y * B.x, d.x * B.x + d.y * B.y);
             float ty = l.y / 1.4;                           // -1 at the open base, 1 at the crown
             float ax = abs(l.x) / mix(0.62, 1.0, smoothstep(-1.0, 0.4, ty));
             float e = ax * ax * ax + pow(abs(ty), ty > 0.0 ? 3.5 : 9.0);
-            float aa = 3.0 * px / A.z;
+            float aa = 3.0 * px * A.z;
             float body = smoothstep(1.0 + aa, 1.0 - aa, e);
             float flame = exp(-(l.x * l.x * 1.6 + (ty + 0.85) * (ty + 0.85) * 2.2));
-            float3 lamp = mix(0.8 * paper * paper * paper + float3(0.0, 0.0, 0.02), paper, flame)
-                        + max(sqrt(paper), 0.25) * flame * flame * 1.3;      // the flame shows even through black paper
+            float3 lamp = mix(scene[S25_PAPER + 1].rgb, u.col2.rgb, flame) + scene[S25_PAPER + 2].rgb * flame * flame;
             lamp *= (1.0 - 0.22 * ax * ax) * (1.0 - 0.4 * smoothstep(0.1, 1.0, ty));     // round, and dimmer at the crown
             col = mix(col, lamp * (0.55 + 0.9 * B.z) * (0.08 + 0.92 * B.w), body * saturate(B.w * 12.0));
         }
@@ -2429,7 +2454,7 @@ fragment float4 fs25_lanterns(VSOut in [[stage_in]], constant Uniforms& u [[buff
     if (dep > 0.0) {                                        // still water: dimmer, and darker close in
         col = col * mix(0.82, 0.42, smoothstep(0.0, 0.7, dep)) + 0.026 * u.col0.rgb;
     }
-    col += (0.33 * u.col1.rgb + 0.14 * u.col0.rgb) * 0.2 * exp(-abs(dep) * 34.0);    // mist on the far shore
+    if (abs(dep) < 0.25) col += (0.33 * u.col1.rgb + 0.14 * u.col0.rgb) * 0.2 * exp(-abs(dep) * 34.0);    // mist on the far shore
     col *= 1.0 - 0.14 * length(p);
     return float4(s_dither(grain(s_tonemap(col, 0.5, 0.95), in.position, u.res, nt), in.position, nt), 1.0);
 }
@@ -2462,6 +2487,7 @@ constant float4 S26_WAVE[14] = {    // (heading x, heading z, wavenumber, angula
     float4(-0.50365, -0.86391, 17.08259, 5.43425), float4(0.81962, -0.57290, 24.08646, 6.45281),
     float4(-0.19190, -0.98141, 33.96190, 7.66229), float4(0.01845, -0.99983, 47.88629, 9.09846),
 };
+constant float S26_PXREF = 2.0 / 559.0;   // look scale, in p: one pixel at renderScale 0.5 on 1117 pt
 constant float S26_TAIL[14] = {     // Σ (a·k)² over swells i.. (slope variance ×2 still to come)
     0.0310395, 0.028854, 0.0266636, 0.0244684, 0.0222684, 0.0200635, 0.0178538,
     0.0156392, 0.0134197, 0.0111954, 0.00896615, 0.006732, 0.00449293, 0.00224894,
@@ -2515,6 +2541,10 @@ fragment float4 fs26_sea(VSOut in [[stage_in]], constant Uniforms& u [[buffer(0)
     float2 p  = (fc * 2.0 - u.res) / u.res.y;
     float t = u.time, me = u.mouseEffects;
     float px = 2.0 / u.res.y;
+    // Every feature (wave detail, glitter, star size) is sized at a fixed screen
+    // scale, the Battery saver pixel on a 16" MBP, so higher resolutions draw the
+    // same picture, only sharper. Only edge AA uses the real pixel.
+    float pxL = max(px, S26_PXREF);
     float3 horizon = float3(0.055, 0.080, 0.120) * u.col0.rgb / S26_NIGHT;
     float3 moonC   = u.col1.rgb / S26_MOON;
     float3 halo    = float3(0.32, 0.38, 0.48) * u.col2.rgb / S26_HALO;
@@ -2541,12 +2571,12 @@ fragment float4 fs26_sea(VSOut in [[stage_in]], constant Uniforms& u [[buffer(0)
             col = mix(col, horizon * float3(1.27, 1.06, 0.92) + halo * float3(1.56, 1.45, 1.25) * pow(saturate(cm), 60.0), cl * 0.55);
         }
 
-        // Stars: one candidate per cell, a pixel or so across, slowly breathing.
+        // Stars: one candidate per cell, a reference pixel or so across, slowly breathing.
         float2 g = p * 60.0, ci = floor(g);
         float h = hash12(ci);
         if (h > 1.0 - 0.3 * u.opt.w) {
             float2 sp = ci + 0.15 + 0.7 * hash22(ci + 3.1);
-            float sd = length(g - sp) / (60.0 * px);
+            float sd = length(g - sp) / (60.0 * pxL);
             float star = exp(-sd * sd * 0.8) * (0.15 + 0.85 * pow(fract(h * 13.7), 4.0))
                        * (0.75 + 0.25 * sin(t * (0.4 + h) + h * 40.0));
             star *= smoothstep(0.02, 0.2, d.y) * smoothstep(0.985, 0.94, cm) * (1.0 - cl);
@@ -2566,7 +2596,7 @@ fragment float4 fs26_sea(VSOut in [[stage_in]], constant Uniforms& u [[buffer(0)
     } else {
         float tt = S26_EYE / -d.y;
         float2 x = tt * d.xz;
-        float fp = tt * px / (S26_F * sqrt(-d.y));            // pixel footprint on the water
+        float fp = tt * pxL / (S26_F * sqrt(-d.y));           // (reference) pixel footprint on the water
         float swell = exp2((u.opt.x - 0.5) * 2.0);            // 0.5–2× the default sea state
         float lost;
         float3 w = s26_waves(x, t, fp, lost) * swell;

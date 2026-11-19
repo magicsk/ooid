@@ -48,11 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         static let showInMenuBar          = "showInMenuBar"
         static let hotCorner              = "hotCorner"
         static let maxFrameRate           = "maxFrameRate"
+        static let resolution             = "resolution"
         static let idleThrottleEnabled    = "idleThrottleEnabled"
         static let useSystemSaver         = "useSystemSaver"
         static let saverSwapUntil         = "saverSwapUntil"
         static let shaderOptions          = "shaderOptions"
         static let shaderColors           = "shaderColors"
+        static let shader                 = "shader"
     }
 
     // Slider and palette tweaks, keyed by fragment function so they survive
@@ -118,6 +120,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return 30
         }
         set { UserDefaults.standard.set(newValue, forKey: Defaults.maxFrameRate) }
+    }
+    private var resolution: Int {
+        get {
+            let v = UserDefaults.standard.object(forKey: Defaults.resolution) as? Int
+            return v.map { max(0, min(SettingsController.resolutionOptions.count - 1, $0)) }
+                ?? SettingsController.defaultResolution
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Defaults.resolution) }
     }
     private var idleThrottleEnabled: Bool {
         get {
@@ -275,6 +285,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.maxFrameRate = fps
             self.metalView.setActiveFps(fps)
         }
+        settingsController.onResolutionChanged = { [weak self] i in
+            guard let self = self else { return }
+            self.resolution = i
+            self.metalView.setResolution(i)
+        }
+        metalView.onResolutionStepped = { [weak self] i in self?.resolution = i }
         settingsController.onIdleThrottleToggled = { [weak self] enabled in
             guard let self = self else { return }
             self.idleThrottleEnabled = enabled
@@ -282,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         renderer.onShaderChange = { [weak self] idx in
             guard let self = self else { return }
+            UserDefaults.standard.set(ShaderCatalog.entries[idx].fragmentFunction, forKey: Defaults.shader)
             self.refreshOverlay(index: idx)
             self.metalView.onShaderChanged()
             self.overlay.applyOptionValues(
@@ -309,8 +326,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             renderer.mouseEffectsEnabled = UserDefaults.standard.bool(forKey: Defaults.mouseEffectsEnabled)
         }
         restoreShaderSettings()
+        // The last shader shown, saved by fragment function so catalog changes
+        // can't shift it; the flow field on first launch.
+        let fns = ShaderCatalog.entries.map(\.fragmentFunction)
+        renderer.selectShader(UserDefaults.standard.string(forKey: Defaults.shader).flatMap(fns.firstIndex)
+                              ?? fns.firstIndex(of: "fs12_flowfield") ?? 0)
         metalView.setActiveFps(maxFrameRate)
         metalView.setIdleThrottleEnabled(idleThrottleEnabled)
+        metalView.setResolution(resolution)
 
         refreshOverlay(index: renderer.currentShaderIndex)
         overlay.applyOptionValues(
@@ -583,7 +606,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             showInMenuBar: showInMenuBar,
             hotCorner: hotCorner.rawValue,
             frameRate: maxFrameRate,
-            idleThrottle: idleThrottleEnabled)
+            idleThrottle: idleThrottleEnabled,
+            resolution: resolution)
     }
     @objc private func openSettingsAction(_ sender: Any?) { openSettings() }
     @objc private func checkForUpdatesAction(_ sender: Any?) { updater?.checkForUpdates(sender) }
@@ -801,7 +825,8 @@ private extension NSMenu {
 if CommandLine.arguments.contains("--bench") {
     let args = CommandLine.arguments
     func arg(_ k: String) -> String? { args.firstIndex(of: k).map { args[$0 + 1] } }
-    do { try Bench.run(pngDir: arg("--png"), pacedFps: arg("--paced").flatMap(Double.init), only: arg("--only")) }
+    do { try Bench.run(pngDir: arg("--png"), pacedFps: arg("--paced").flatMap(Double.init), only: arg("--only"),
+                       quality: arg("--quality").flatMap(Double.init) ?? 1) }
     catch { print(error); exit(1) }
     exit(0)
 }

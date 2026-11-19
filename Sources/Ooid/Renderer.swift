@@ -214,11 +214,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         enc.endEncoding()
     }
 
-    // Gray–Scott reaction–diffusion on a grid at 1/3 of the drawable, ~480
-    // steps a second whatever the frame rate (capped at 12 per frame, so an
-    // idle 15 fps just evolves slower). Returns the latest state texture.
+    // Gray–Scott reaction–diffusion, ~480 steps a second whatever the frame
+    // rate (capped at 12 per frame, so an idle 15 fps just evolves slower).
+    // The pattern's scale is fixed in grid cells, so the grid is a fixed 372
+    // rows (1/3 of a 16" MBP at renderScale 1) at the view's aspect, never the
+    // drawable: otherwise the coral shrinks as the Resolution setting rises.
+    // Returns the latest state texture.
     private func encodeTuring(_ cb: MTLCommandBuffer, size: CGSize, dt: Double) -> MTLTexture? {
-        let w = max(1, Int(size.width) / 3), h = max(1, Int(size.height) / 3)
+        let h = 372, w = max(1, Int((Double(h) * size.width / max(1, size.height)).rounded()))
         if sim.first?.width != w || sim.first?.height != h {
             sim = [makeTarget(.rg16Float, w, h), makeTarget(.rg16Float, w, h)]
             simFlip = 0
