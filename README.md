@@ -16,14 +16,7 @@ brew install --cask magicsk/ooid/ooid
 
 **Manual:** download `Ooid.dmg` from the
 [latest release](https://github.com/magicsk/ooid/releases/latest) and drag Ooid to Applications.
-
-**First launch:** Ooid is ad-hoc signed, not notarized, so macOS blocks it the first
-time. Try to open it, then choose **Open Anyway** in System Settings → Privacy &
-Security, or run:
-
-```sh
-xattr -d com.apple.quarantine /Applications/Ooid.app
-```
+It's signed with a Developer ID and notarized by Apple, so it opens like any other app.
 
 **Updates:** Ooid updates itself using [Sparkle](https://sparkle-project.org). You can
 also use **Ooid → Check for Updates…**. Homebrew leaves updates to Sparkle, so
@@ -85,7 +78,10 @@ Metal shader cache and start instantly.
 ## Releasing
 
 Push a version tag. The [release workflow](.github/workflows/release.yml) builds the
-DMG, signs the update, and publishes the GitHub release that Sparkle and Homebrew read.
+DMG, signs it with the Developer ID, notarizes it, signs the update, and publishes the
+GitHub release that Sparkle and Homebrew read. It needs the repo secrets
+`DEVELOPER_ID_P12` (base64), `DEVELOPER_ID_P12_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`,
+`APPLE_APP_PASSWORD` (app-specific) and `SPARKLE_ED_KEY`.
 
 ```sh
 git tag v1.2.3 && git push origin v1.2.3

@@ -4,6 +4,11 @@
 #   Scripts/build-dmg.sh              # release build + app + signed + dmg
 #   SKIP_BUILD=1 Scripts/build-dmg.sh # reuse existing .build/release/Ooid
 #   VERSION=v1.2.3 Scripts/build-dmg.sh # version for Info.plist (CI passes the tag)
+#
+# Distribution signing (otherwise the app is signed ad-hoc):
+#   SIGN_IDENTITY="Developer ID Application"   codesign identity (a substring is enough)
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   also notarize and staple the DMG
+#   NOTARY_PROFILE=ooid                         or a `notarytool store-credentials` profile
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -93,8 +98,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # --- Sign --------------------------------------------------------------------
-codesign --force --deep --sign - "$APP"
-codesign --verify --verbose "$APP"
+IDENTITY="${SIGN_IDENTITY:--}"
+if [ "$IDENTITY" = "-" ]; then
+  codesign --force --deep --sign - "$APP"
+else
+  # Inside out, as Sparkle's docs lay it out. --deep would skip the hardened
+  # runtime and timestamp on the nested code, and notarization needs both.
+  sign() { codesign --force --timestamp --options runtime --sign "$IDENTITY" "$@"; }
+  S="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+  sign "$S/XPCServices/Installer.xpc"
+  sign --preserve-metadata=entitlements "$S/XPCServices/Downloader.xpc"
+  sign "$S/Autoupdate" "$S/Updater.app"
+  sign "$APP/Contents/Frameworks/Sparkle.framework"
+  sign "$APP"
+fi
+codesign --verify --deep --strict --verbose=2 "$APP"
 
 # --- DMG ---------------------------------------------------------------------
 STAGING=$(mktemp -d)/ooid-dmg-staging
@@ -105,7 +123,30 @@ rm -f "$DMG"
 hdiutil create -volname "Ooid" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 hdiutil verify "$DMG" >/dev/null
 
+# --- Notarize ----------------------------------------------------------------
+# One submission for the DMG covers the app inside it; the stapled ticket lets
+# Gatekeeper pass both without a network check.
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+  NOTARY=(--keychain-profile "$NOTARY_PROFILE")
+elif [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+  NOTARY=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD")
+fi
+if [ "$IDENTITY" != "-" ]; then
+  codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+  if [ -n "${NOTARY+x}" ]; then
+    OUT=$(xcrun notarytool submit "$DMG" "${NOTARY[@]}" --wait --output-format json)
+    ID=$(plutil -extract id raw -o - - <<<"$OUT")
+    if [ "$(plutil -extract status raw -o - - <<<"$OUT")" != "Accepted" ]; then
+      xcrun notarytool log "$ID" "${NOTARY[@]}"
+      echo "Notarization failed: $OUT" >&2
+      exit 1
+    fi
+    xcrun stapler staple "$DMG"
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+  fi
+fi
+
 echo
 echo "✓ Built  $APP"
-echo "✓ Signed ad-hoc"
+echo "✓ Signed $([ "$IDENTITY" = "-" ] && echo ad-hoc || echo "$IDENTITY")$([ -n "${NOTARY+x}" ] && [ "$IDENTITY" != "-" ] && echo ", notarized")"
 echo "✓ DMG    $DMG ($(du -h "$DMG" | cut -f1))"
