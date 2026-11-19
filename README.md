@@ -1,6 +1,6 @@
 # Ooid
 
-22 interactive fragment-shader wallpapers for macOS, written in Swift + Metal for
+27 interactive fragment-shader wallpapers for macOS, written in Swift + Metal for
 raw GPU efficiency. Use them in a window, as your desktop wallpaper or as a screensaver.
 
 ## Install
@@ -65,7 +65,7 @@ through a browser-level abstraction. On the same pixels, a direct Metal path giv
 - **Mouse move** — each shader reacts differently (gravity well, thermal,
   pinch, tilt, magnet, heat, black hole, …)
 - **Click** — emits a shockwave in whatever medium the current shader models
-- **1…9, 0** — jump directly to shader 1…9 / 10 (11–22: arrows or the nav)
+- **1…9, 0** — jump directly to shader 1…9 / 10 (11–27: arrows or the nav)
 - **Left / Right arrow, Space** — cycle
 - **F / Escape** — toggle fullscreen
 - **Q** — quit

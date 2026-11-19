@@ -790,6 +790,7 @@ final class OptionsPanel: NSView {
     private let midWell    = NSColorWell(frame: .zero)
     private let hotWell    = NSColorWell(frame: .zero)
     private var colorPresets: [ColorPreset] = []
+    private var wellLabels: [NSTextField] = []
 
     private var sliders: [(slot: Int, slider: NSSlider, label: NSTextField)] = []
 
@@ -867,6 +868,7 @@ final class OptionsPanel: NSView {
         let shadowLabel = colorWellLabel("SHADOW")
         let midLabel    = colorWellLabel("MID")
         let hotLabel    = colorWellLabel("HOT")
+        wellLabels = [shadowLabel, midLabel, hotLabel]
         let shadowCol = NSStackView(views: [shadowLabel, shadowWell])
         let midCol    = NSStackView(views: [midLabel, midWell])
         let hotCol    = NSStackView(views: [hotLabel, hotWell])
@@ -914,12 +916,9 @@ final class OptionsPanel: NSView {
             sliders.append((slot, row.slider, row.valueLabel))
         }
 
-        // Palette presets — only the flow field surfaces this today. Future
-        // shaders that want colour can add their own preset lists.
-        let presets = entry.fragmentFunction == "fs12_flowfield"
-            ? ShaderCatalog.flowFieldPresets
-            : []
+        let presets = entry.colorPresets
         colorPresets = presets
+        for (label, text) in zip(wellLabels, entry.colorLabels) { setWellLabel(label, text) }
         presetPopup.removeAllItems()
         presetPopup.addItems(withTitles: (presets.map { $0.name } + ["Custom"]))
         colorSection.isHidden = presets.isEmpty
@@ -959,12 +958,15 @@ final class OptionsPanel: NSView {
 
     private func colorWellLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: "")
+        setWellLabel(label, text)
+        return label
+    }
+    private func setWellLabel(_ label: NSTextField, _ text: String) {
         label.attributedStringValue = NSAttributedString(string: text, attributes: [
             .font: OverlayView.monoFont(size: 9.5, weight: .regular),
             .foregroundColor: OverlayView.fgFaint,
             .kern: 0.14 * 9.5,
         ])
-        return label
     }
 
     @objc private func presetChanged(_ sender: NSPopUpButton) {

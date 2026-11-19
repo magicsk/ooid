@@ -51,6 +51,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         static let idleThrottleEnabled    = "idleThrottleEnabled"
         static let useSystemSaver         = "useSystemSaver"
         static let saverSwapUntil         = "saverSwapUntil"
+        static let shaderOptions          = "shaderOptions"
+        static let shaderColors           = "shaderColors"
+    }
+
+    // Slider and palette tweaks, keyed by fragment function so they survive
+    // catalog reordering: [fn: [x, y, z, w]] and [fn: [r, g, b] × 3].
+    private func saveShaderSettings() {
+        let fn = ShaderCatalog.entries.map(\.fragmentFunction)
+        var opts: [String: [Double]] = [:], cols: [String: [Double]] = [:]
+        for (i, v) in renderer.optionValues { opts[fn[i]] = [v.x, v.y, v.z, v.w].map(Double.init) }
+        for (i, c) in renderer.colorValues {
+            cols[fn[i]] = [c.0, c.1, c.2].flatMap { [$0.x, $0.y, $0.z].map(Double.init) }
+        }
+        UserDefaults.standard.set(opts, forKey: Defaults.shaderOptions)
+        UserDefaults.standard.set(cols, forKey: Defaults.shaderColors)
+    }
+    private func restoreShaderSettings() {
+        let opts = UserDefaults.standard.dictionary(forKey: Defaults.shaderOptions) as? [String: [Double]] ?? [:]
+        let cols = UserDefaults.standard.dictionary(forKey: Defaults.shaderColors) as? [String: [Double]] ?? [:]
+        for (i, e) in ShaderCatalog.entries.enumerated() {
+            if let v = opts[e.fragmentFunction], v.count == 4 {
+                renderer.optionValues[i] = SIMD4<Float>(v.map(Float.init))
+            }
+            if let v = cols[e.fragmentFunction]?.map(Float.init), v.count == 9 {
+                renderer.colorValues[i] = (SIMD4(v[0], v[1], v[2], 1), SIMD4(v[3], v[4], v[5], 1),
+                                           SIMD4(v[6], v[7], v[8], 1))
+            }
+        }
     }
 
     // Hot-corner enum. 0 = disabled, 1–4 = the four corners. Persisted as Int.
@@ -205,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         overlay.onOptionChanged = { [weak self] slot, value in
             guard let self = self else { return }
             self.renderer.setOption(shaderIndex: self.renderer.currentShaderIndex, slot: slot, value: value)
+            self.saveShaderSettings()
         }
         overlay.onMouseEffectsToggled = { [weak self] enabled in
             guard let self = self else { return }
@@ -215,10 +244,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         overlay.onColorChanged = { [weak self] slot, value in
             guard let self = self else { return }
             self.renderer.setColor(shaderIndex: self.renderer.currentShaderIndex, slot: slot, value: value)
+            self.saveShaderSettings()
         }
         overlay.onColorPresetApplied = { [weak self] cs in
             guard let self = self else { return }
             self.renderer.setColorSet(shaderIndex: self.renderer.currentShaderIndex, cs)
+            self.saveShaderSettings()
         }
 
         // Settings callbacks.
@@ -277,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if UserDefaults.standard.object(forKey: Defaults.mouseEffectsEnabled) != nil {
             renderer.mouseEffectsEnabled = UserDefaults.standard.bool(forKey: Defaults.mouseEffectsEnabled)
         }
+        restoreShaderSettings()
         metalView.setActiveFps(maxFrameRate)
         metalView.setIdleThrottleEnabled(idleThrottleEnabled)
 
@@ -768,7 +800,8 @@ private extension NSMenu {
 
 if CommandLine.arguments.contains("--bench") {
     let args = CommandLine.arguments
-    do { try Bench.run(pngDir: args.firstIndex(of: "--png").map { args[$0 + 1] }) }
+    func arg(_ k: String) -> String? { args.firstIndex(of: k).map { args[$0 + 1] } }
+    do { try Bench.run(pngDir: arg("--png"), pacedFps: arg("--paced").flatMap(Double.init), only: arg("--only")) }
     catch { print(error); exit(1) }
     exit(0)
 }
